@@ -220,7 +220,8 @@ class DataLoaderLite:
         assert split in {'train', 'val'}
 
         # get the shard filenames
-        data_root = "edu_fineweb10B"
+        # data_root = "edu_fineweb10B"
+        data_root = "input.txt"
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -287,6 +288,7 @@ import torch.distributed as dist
 
 # set up DDP (distributed data parallel).
 # torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
+#######################################################################################
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
     # use of DDP atm demands CUDA, we set the device appropriately according to rank
@@ -307,13 +309,13 @@ else:
     # attempt to autodetect device
     device = "cpu"
     if torch.cuda.is_available():
-        device = "cuda"
-    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-        device = "mps"
+        device = "cuda:2"
+    # elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+    #     device = "mps"
     print(f"using device: {device}")
-
+#########################################################################################
 # added after video, pytorch can be serious about it's device vs. device_type distinction
-device_type = "cuda" if device.startswith("cuda") else "cpu"
+device_type = "cuda:2" #if device.startswith("cuda:2") else "cpu"
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
@@ -322,7 +324,7 @@ if torch.cuda.is_available():
 enc = tiktoken.get_encoding("gpt2")
 
 total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
-B = 64 # micro batch size
+B = 4 # micro batch size(64)
 T = 1024 # sequence length
 assert total_batch_size % (B * T * ddp_world_size) == 0, "make sure total_batch_size is divisible by B * T * ddp_world_size"
 grad_accum_steps = total_batch_size // (B * T * ddp_world_size)
