@@ -8,6 +8,8 @@ import torch.nn as nn
 from torch.nn import functional as F
 from hellaswag import render_example, iterate_examples
 # -----------------------------------------------------------------------------
+######################################################################################################################################
+##################################################### STEP1 Creating Model Architecture ##############################################
 
 class CausalSelfAttention(nn.Module):
 
@@ -33,7 +35,7 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
-        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True) # flash attention      ===================> Fast Attention Mechanism
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
         # output projection
         y = self.c_proj(y)
@@ -202,6 +204,8 @@ class GPT(nn.Module):
         return optimizer
 
 # -----------------------------------------------------------------------------
+######################################################################################################################################
+##################################################### STEP2 Load DataSet #############################################################
 import tiktoken
 import numpy as np
 
@@ -212,16 +216,23 @@ def load_tokens(filename):
     return ptt
 
 class DataLoaderLite:
-    def __init__(self, B, T, process_rank, num_processes, split):
+    def __init__(self, B, T, process_rank, num_processes,split):
         self.B = B
         self.T = T
         self.process_rank = process_rank
         self.num_processes = num_processes
         assert split in {'train', 'val'}
+        # with open('input.txt', 'r') as f:
+        #     text = f.read()
+        # enc = tiktoken.get_encoding('gpt2')
+        # tokens = enc.encode(text)
+        # self.tokens = torch.tensor(tokens)
+        # print(f"loaded {len(self.tokens)} tokens")
+        # print(f"1 epoch = {len(self.tokens) // (B * T)} batchs")    
 
         # get the shard filenames
-        # data_root = "edu_fineweb10B"
-        data_root = "input.txt"
+        data_root = "edu_fineweb10B"
+        # data_root = "/home/praveent/Reproduce_GPT2_from_Scratch-1/input.txt"
         shards = os.listdir(data_root)
         shards = [s for s in shards if split in s]
         shards = sorted(shards)
@@ -253,6 +264,10 @@ class DataLoaderLite:
         return x, y
 
 # -----------------------------------------------------------------------------
+######################################################################################################################################
+##################################################### STEP3 ##########################################################################
+
+
 # helper function for HellaSwag eval
 # takes tokens, mask, and logits, returns the index of the completion with the lowest loss
 
@@ -288,41 +303,38 @@ import torch.distributed as dist
 
 # set up DDP (distributed data parallel).
 # torchrun command sets the env variables RANK, LOCAL_RANK, and WORLD_SIZE
-#######################################################################################
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
     # use of DDP atm demands CUDA, we set the device appropriately according to rank
     assert torch.cuda.is_available(), "for now i think we need CUDA for DDP"
     init_process_group(backend='nccl')
     ddp_rank = int(os.environ['RANK'])
-    ddp_local_rank = int(os.environ['LOCAL_RANK'])
-    ddp_world_size = int(os.environ['WORLD_SIZE'])
+    ddp_local_rank = int(os.environ['LOCAL_RANK'])   # tell which gpu is running
+    ddp_world_size = int(os.environ['WORLD_SIZE'])   ## total number of gpu is running
     device = f'cuda:{ddp_local_rank}'
     torch.cuda.set_device(device)
     master_process = ddp_rank == 0 # this process will do logging, checkpointing etc.
 else:
     # vanilla, non-DDP run
-    ddp_rank = 0
+    ddp_rank = 0         #gpu2
     ddp_local_rank = 0
     ddp_world_size = 1
     master_process = True
     # attempt to autodetect device
     device = "cpu"
     if torch.cuda.is_available():
-        device = "cuda:2"
-    # elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-    #     device = "mps"
-    print(f"using device: {device}")
-#########################################################################################
-# added after video, pytorch can be serious about it's device vs. device_type distinction
-device_type = "cuda:2" #if device.startswith("cuda:2") else "cpu"
+        device = "cuda"
+print(f"using device: {device}")
+device_type = "cuda" if device.startswith("cuda") else "cpu"
 
 torch.manual_seed(1337)
 if torch.cuda.is_available():
     torch.cuda.manual_seed(1337)
+    
+######################################################################################################################################
+##################################################### STEP4 Start Training ###########################################################    
 
 enc = tiktoken.get_encoding("gpt2")
-
 total_batch_size = 524288 # 2**19, ~0.5M, in number of tokens
 B = 4 # micro batch size(64)
 T = 1024 # sequence length
@@ -336,21 +348,20 @@ train_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp
 val_loader = DataLoaderLite(B=B, T=T, process_rank=ddp_rank, num_processes=ddp_world_size, split="val")
 
 torch.set_float32_matmul_precision('high')
-
 # create model
 model = GPT(GPTConfig(vocab_size=50304))
 # model = GPT.from_pretrained("gpt2") # or init from OpenAI GPT-2
 model.to(device)
 use_compile = False # torch.compile interferes with HellaSwag eval and Generation. TODO fix
 if use_compile:
-    model = torch.compile(model)
+    model = torch.compile(model) # make implementation more faster using this
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 raw_model = model.module if ddp else model # always contains the "raw" unwrapped model
 
 max_lr = 6e-4
 min_lr = max_lr * 0.1
-warmup_steps = 715
+warmup_steps =  715
 max_steps = 19073 # 19,073 steps is ~1 epoch, if data is 10B tokens and batch size 0.5M tokens
 def get_lr(it):
     # 1) linear warmup for warmup_iters steps
@@ -366,7 +377,7 @@ def get_lr(it):
     return min_lr + coeff * (max_lr - min_lr)
 
 # optimize!
-optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type)
+optimizer = raw_model.configure_optimizers(weight_decay=0.1, learning_rate=6e-4, device_type=device_type) # from gpt2 paper
 
 # create the log directory we will write checkpoints to and log to
 log_dir = "log"
@@ -380,7 +391,7 @@ for step in range(max_steps):
     last_step = (step == max_steps - 1)
 
     # once in a while evaluate our validation loss
-    if step % 250 == 0 or last_step:
+    if step % 150 == 0 or last_step:
         model.eval()
         val_loader.reset()
         with torch.no_grad():
@@ -393,6 +404,7 @@ for step in range(max_steps):
                     logits, loss = model(x, y)
                 loss = loss / val_loss_steps
                 val_loss_accum += loss.detach()
+                
         if ddp:
             dist.all_reduce(val_loss_accum, op=dist.ReduceOp.AVG)
         if master_process:
@@ -412,8 +424,8 @@ for step in range(max_steps):
                 # rng seeds etc., if you wanted to more exactly resume training
                 torch.save(checkpoint, checkpoint_path)
 
-    # once in a while evaluate hellaswag
-    if (step % 250 == 0 or last_step) and (not use_compile):
+    #############################  once in a while evaluate hellaswag  ##################################################
+    if (step % 150 == 0 or last_step) and (not use_compile):
         num_correct_norm = 0
         num_total = 0
         for i, example in enumerate(iterate_examples("val")):
@@ -431,7 +443,7 @@ for step in range(max_steps):
                 pred_norm = get_most_likely_row(tokens, mask, logits)
             num_total += 1
             num_correct_norm += int(pred_norm == label)
-        # reduce the stats across all processes
+        # reduce the stats across all processes 
         if ddp:
             num_total = torch.tensor(num_total, dtype=torch.long, device=device)
             num_correct_norm = torch.tensor(num_correct_norm, dtype=torch.long, device=device)
@@ -439,14 +451,14 @@ for step in range(max_steps):
             dist.all_reduce(num_correct_norm, op=dist.ReduceOp.SUM)
             num_total = num_total.item()
             num_correct_norm = num_correct_norm.item()
-        acc_norm = num_correct_norm / num_total
+        acc_norm = num_correct_norm / num_total #if num_total!=0 else 0
         if master_process:
             print(f"HellaSwag accuracy: {num_correct_norm}/{num_total}={acc_norm:.4f}")
             with open(log_file, "a") as f:
                 f.write(f"{step} hella {acc_norm:.4f}\n")
 
-    # once in a while generate from the model (except step 0, which is noise)
-    if ((step > 0 and step % 250 == 0) or last_step) and (not use_compile):
+    ################################# once in a while generate from the model (except step 0, which is noise) #################################
+    if ((step > 0 and step % 150 == 0) or last_step) and (not use_compile):
         model.eval()
         num_return_sequences = 4
         max_length = 32
@@ -479,6 +491,7 @@ for step in range(max_steps):
         for i in range(num_return_sequences):
             tokens = xgen[i, :max_length].tolist()
             decoded = enc.decode(tokens)
+            # print(f"sample {i}: {decoded}")
             print(f"rank {ddp_rank} sample {i}: {decoded}")
 
     # do one step of the optimization
