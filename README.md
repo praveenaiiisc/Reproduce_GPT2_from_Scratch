@@ -24,3 +24,9 @@ Hello, I'm a language model, and all of this is about modeling and learning Pyth
 ### Training:
 - At Initial stage of traing result comes like this:
 ![alt text](<Screenshot 2024-07-19 132322.png>)
+- After long step in traing result comes like this and better generation:
+![alt text](image.png)
+
+### Comparision Result with OpenAi GPT-2 and GPT-3 Model
+- at intial stage our model has more loss but after more step our model looks very good result in term of both less loss and better accuracy compare to OpenAi result
+![alt text](image-1.png)
